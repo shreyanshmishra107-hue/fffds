@@ -1,7 +1,9 @@
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>Live Stream Player</title>
+  <title>FanCode Player</title>
   <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
   <meta name="referrer" content="no-referrer"/>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/plyr@3.6.12/dist/plyr.css"/>
@@ -11,6 +13,7 @@
       margin: 0;
       padding: 0;
       overflow: hidden;
+      font-family: Arial, sans-serif;
     }
     html, body {
       height: 100%;
@@ -23,10 +26,27 @@
     .plyr {
       height: 100%;
     }
+    #loading, #error {
+      color: white;
+      padding: 2rem;
+      text-align: center;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.8);
+      border-radius: 8px;
+      z-index: 1000;
+    }
+    #error {
+      color: #ff6b6b;
+    }
   </style>
 </head>
 <body>
-  <video id="player" autoplay controls crossorigin playsinline></video>
+  <div id="loading">Loading stream for ID: <span id="loading-id"></span>...</div>
+  <div id="error" style="display:none;"></div>
+  <video id="player" autoplay controls crossorigin playsinline style="display:none;"></video>
 
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.1.4/dist/hls.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/plyr@3.6.12/dist/plyr.min.js"></script>
@@ -45,10 +65,10 @@
     // Get URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     const id = urlParams.get("id");
-    const lang = urlParams.get("lang")  'english';
+    const lang = urlParams.get("lang") || 'english';
 
     // Show loading with ID
-    loadingIdEl.textContent = id  'unknown';
+    loadingIdEl.textContent = id || 'unknown';
 
     if (!id) {
       showError("No ID provided. Use ?id=136037 in the URL");
@@ -71,7 +91,7 @@
 
     // Extract quality URLs from auto_streams
     function extractQualityUrls(autoString) {
-      if (!autoString  typeof autoString !== 'string') {
+      if (!autoString || typeof autoString !== 'string') {
         console.log("No auto string provided");
         return [];
       }
@@ -102,7 +122,7 @@
           
           if (currentInfo.resolution) {
             const heightMatch = currentInfo.resolution.split('x')[1];
-            height = parseInt(heightMatch)  360;
+            height = parseInt(heightMatch) || 360;
           } else {
             // Try to extract from URL
             if (url.includes('1080p')) height = 1080;
@@ -115,8 +135,8 @@
           
           qualities.push({
             height: height,
-            resolution: currentInfo.resolution  height + 'p',
-            bandwidth: currentInfo.bandwidth  (height * 200000),
+            resolution: currentInfo.resolution || height + 'p',
+            bandwidth: currentInfo.bandwidth || (height * 200000),
             url: url
           });
           
@@ -128,7 +148,115 @@
       const unique = Array.from(new Map(qualities.map(q => [q.url, q])).values());
       return unique.sort((a, b) => b.height - a.height);
     }
-    const player = new Plyr(video, {
+
+    // Main function
+    async function initPlayer() {
+      try {
+        console.log("Fetching JSON from:", JSON_URL);
+        const res = await fetch(JSON_URL);
+        
+        if (!res.ok) {
+          throw new Error(`HTTP error! status: ${res.status}`);
+        }
+        
+        const data = await res.json();
+        console.log("JSON loaded successfully");
+        console.log("Total matches:", data.matches?.length);
+        
+        // Find match by ID (convert both to numbers for comparison)
+        const numericId = Number(id);
+        const match = data.matches?.find(m => Number(m.match_id) === numericId);
+        
+        console.log("Looking for ID:", numericId);
+        console.log("Match found:", match ? match.title : "No match found");
+        
+        if (!match) {
+          // List available IDs for debugging
+          const availableIds = data.matches?.map(m => m.match_id).slice(0, 10);
+          showError(`Match ID ${id} not found. Available IDs: ${availableIds?.join(', ')}...`);
+          return;
+        }
+
+        // Check if match is LIVE
+        if (match.status !== "LIVE") {
+          console.log("Match status:", match.status);
+        }
+
+        // Try to get auto_streams
+        let streamUrl = null;
+        let qualities = [];
+
+        if (match.auto_streams && match.auto_streams.length > 0) {
+          console.log("Found auto_streams");
+          const autoData = match.auto_streams[0].auto;
+          qualities = extractQualityUrls(autoData);
+          console.log("Extracted qualities:", qualities.map(q => q.height + 'p').join(', '));
+        }
+
+        // Fallback to STREAMING_CDN if no auto_streams
+        if (qualities.length === 0 && match.STREAMING_CDN) {
+          console.log("No auto_streams, checking STREAMING_CDN");
+          const primaryUrl = match.STREAMING_CDN.Primary_Playback_URL;
+          
+          if (primaryUrl && primaryUrl !== "Unavailable" && primaryUrl !== null) {
+            qualities.push({
+              height: 1080,
+              resolution: '1080p',
+              bandwidth: 5000000,
+              url: primaryUrl
+            });
+            console.log("Using Primary_Playback_URL");
+          }
+        }
+
+        if (qualities.length === 0) {
+          showError("No playable streams found for this match.");
+          return;
+        }
+
+        // Build master playlist with proxy URLs
+        const proxyQualities = qualities.map(q => ({
+          ...q,
+          proxyUrl: PROXY_BASE + encodeURIComponent(q.url)
+        }));
+
+        console.log("Proxy URLs prepared");
+
+        // Create master playlist
+        let masterPlaylist = '#EXTM3U\n#EXT-X-VERSION:3\n';
+        proxyQualities.forEach(q => {
+          const resolution = q.resolution || (q.height + 'x' + Math.round(q.height * 16/9));
+          masterPlaylist += `#EXT-X-STREAM-INF:BANDWIDTH=${q.bandwidth},RESOLUTION=${resolution}\n`;
+          masterPlaylist += q.proxyUrl + '\n';
+        });
+
+        console.log("Master playlist created");
+
+        // Create blob URL
+        const blob = new Blob([masterPlaylist], { type: 'application/vnd.apple.mpegurl' });
+        const blobUrl = URL.createObjectURL(blob);
+
+        // Initialize player
+        showVideo();
+
+        if (Hls.isSupported()) {
+          const hls = new Hls({
+            maxBufferLength: 30,
+            maxMaxBufferLength: 100,
+            enableWorker: true,
+            debug: false
+          });
+
+          hls.loadSource(blobUrl);
+          hls.attachMedia(video);
+
+          hls.on(Hls.Events.MANIFEST_PARSED, function() {
+            console.log("HLS manifest parsed");
+            
+            const levels = hls.levels.map(level => level.height).filter(Boolean);
+            console.log("Available qualities:", levels);
+
+            const player = new Plyr(video, {
               controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'settings', 'fullscreen'],
               quality: {
                 default: levels.includes(1080) ? 1080 : (levels[0] || 360),
@@ -189,8 +317,8 @@
 
     // Join prompt after a delay
     setTimeout(() => {
-      if (window.confirm("Join @matcheslinks for more live links?")) {
-        window.open("https://t.me/+e3-eAje291cxNGNl", "_blank");
+      if (window.confirm("Join @offsideverse for more live links?")) {
+        window.open("https://t.me/+7VkflslOE9s4YjQ9", "_blank");
       }
     }, 5000);
 
