@@ -128,5 +128,73 @@
       const unique = Array.from(new Map(qualities.map(q => [q.url, q])).values());
       return unique.sort((a, b) => b.height - a.height);
     }
+const player = new Plyr(video, {
+              controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'settings', 'fullscreen'],
+              quality: {
+                default: levels.includes(1080) ? 1080 : (levels[0] || 360),
+                options: levels,
+                forced: true,
+                onChange: (quality) => {
+                  const levelIndex = hls.levels.findIndex(level => level.height === quality);
+                  if (levelIndex !== -1) {
+                    hls.currentLevel = levelIndex;
+                  }
+                }
+              }
+            });
+
+            // Auto fullscreen orientation lock
+            document.addEventListener('fullscreenchange', () => {
+              if (document.fullscreenElement && screen.orientation?.lock) {
+                screen.orientation.lock('landscape').catch(() => {});
+              }
+            });
+
+            window.player = player;
+          });
+
+          hls.on(Hls.Events.ERROR, (event, data) => {
+            console.error("HLS error:", data);
+            if (data.fatal) {
+              switch(data.type) {
+                case Hls.ErrorTypes.NETWORK_ERROR:
+                  hls.startLoad();
+                  break;
+                case Hls.ErrorTypes.MEDIA_ERROR:
+                  hls.recoverMediaError();
+                  break;
+                default:
+                  showError("Fatal playback error");
+                  break;
+              }
+            }
+          });
+
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          // Safari fallback
+          video.src = blobUrl;
+          new Plyr(video);
+        } else {
+          showError("HLS is not supported in this browser");
+        }
+
+      } catch (err) {
+        console.error("Initialization error:", err);
+        showError("Error loading stream: " + err.message);
+      }
+    }
+
+    // Start the player
+    initPlayer();
+
+    // Join prompt after a delay
+    setTimeout(() => {
+      if (window.confirm("Join @matcheslinks for more live links?")) {
+        window.open("https://t.me/+e3-eAje291cxNGNl", "_blank");
+      }
+    }, 5000);
+
+  })();
+  </script>
 </body>
 </html>
