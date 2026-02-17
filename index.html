@@ -128,7 +128,7 @@
       const unique = Array.from(new Map(qualities.map(q => [q.url, q])).values());
       return unique.sort((a, b) => b.height - a.height);
     }
-const player = new Plyr(video, {
+    const player = new Plyr(video, {
               controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'settings', 'fullscreen'],
               quality: {
                 default: levels.includes(1080) ? 1080 : (levels[0] || 360),
